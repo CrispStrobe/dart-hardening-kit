@@ -1,0 +1,6 @@
+name: covfuzz
+description: Coverage-guided corpus-evolution fuzzer for Dart parsers.
+environment:
+  sdk: ^3.0.0
+dependencies:
+  vm_service: ^14.0.0

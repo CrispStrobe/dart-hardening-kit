@@ -121,12 +121,23 @@ is the established Dart tool; it targets invariants over generated values,
 whereas this kit targets the "never crash on malformed input" contract over
 real-world seeds.
 
-## Limitations and roadmap
+## Coverage-guided fuzzing: `covfuzz/`
 
-- **No coverage feedback.** Mutation is blind; it will not synthesize an input
-  that satisfies a checksum or a multi-field precondition the way a
-  coverage-guided fuzzer can. A VM-coverage-driven corpus is the largest
-  possible improvement.
+The blind harness above cannot get past a magic check or a multi-field
+precondition. [`covfuzz/`](covfuzz/) adds coverage guidance: it reads the
+target's coverage from the VM service after each input and keeps any input that
+reaches new code as a corpus seed, evolving toward deep paths (the libFuzzer/AFL
+loop). On the bundled demo — a bug behind a 4-byte magic — blind mutation finds
+nothing in 500k tries while covfuzz climbs the four conditions and reports the
+minimized 5-byte trigger. It is far slower (a VM-service query per input) and
+runs in-process, so shake out hangs with the blind harness first; see its
+[README](covfuzz/README.md).
+
+## Limitations
+
+- **The blind harness has no coverage feedback.** It will not synthesize an
+  input that satisfies a checksum or a multi-field precondition; `covfuzz/`
+  handles those at the cost of throughput.
 - **No structure-aware mutation.** Dumb byte-flipping bounces off magic numbers
   and checksums. An input dictionary (libFuzzer `-dict` style) of format tokens
   would reach deeper; it is a natural extension of `mutateBytes`.

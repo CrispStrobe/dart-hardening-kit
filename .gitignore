@@ -2,3 +2,7 @@
 .DS_Store
 *.log
 tool/.probe_fuzzable_*.dart
+covfuzz/pubspec.lock
+covfuzz/.dart_tool/
+.corpus/
+.crashes/
