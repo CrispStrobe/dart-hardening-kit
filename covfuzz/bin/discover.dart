@@ -2,10 +2,9 @@
 // (byte readers, parseXxx(String), fromJson). Usage: covfuzz_discover [root]
 import 'dart:io';
 
-final _entry = RegExp(
-  r'(\b[A-Za-z_]\w*\s*\((Uint8List|List<int>)\s)'
-  r'|(parse\w*\s*\(\s*String\s)'
-  r'|(factory\s+\w+\.fromJson)');
+final _entry = RegExp(r'(\b[A-Za-z_]\w*\s*\((Uint8List|List<int>)\s)'
+    r'|(parse\w*\s*\(\s*String\s)'
+    r'|(factory\s+\w+\.fromJson)');
 
 String _pkgName(File p) {
   for (final l in p.readAsLinesSync()) {
@@ -25,7 +24,9 @@ void main(List<String> args) {
     for (final f in lib.listSync(recursive: true).whereType<File>()) {
       if (!f.path.endsWith('.dart') ||
           f.path.endsWith('_test.dart') ||
-          f.path.endsWith('.g.dart')) continue;
+          f.path.endsWith('.g.dart')) {
+        continue;
+      }
       final lines = f.readAsLinesSync();
       for (var i = 0; i < lines.length; i++) {
         final l = lines[i];
@@ -38,8 +39,9 @@ void main(List<String> args) {
       }
     }
     if (hits.isEmpty) continue;
-    stdout.writeln('### ${d.path.split('/').last}   package=${_pkgName(pubspec)}'
-        '${ffi ? '   (uses dart:ffi — probe before you fuzz)' : ''}');
+    stdout
+        .writeln('### ${d.path.split('/').last}   package=${_pkgName(pubspec)}'
+            '${ffi ? '   (uses dart:ffi — probe before you fuzz)' : ''}');
     hits.take(40).forEach(stdout.writeln);
     stdout.writeln();
   }

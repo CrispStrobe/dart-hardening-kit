@@ -12,7 +12,8 @@ Future<void> main(List<String> args) async {
     if (args[i] == '--test') test = args[i + 1];
   }
   if (file == null || guard == null || test == null) {
-    stderr.writeln("usage: covfuzz_mutverify --file F --guard NAME --test 'CMD'");
+    stderr
+        .writeln("usage: covfuzz_mutverify --file F --guard NAME --test 'CMD'");
     exit(2);
   }
   final f = File(file);
@@ -22,7 +23,8 @@ Future<void> main(List<String> args) async {
   }
   final orig = f.readAsStringSync();
   if (!orig.contains('GUARD:$guard >>>')) {
-    stderr.writeln("no '// GUARD:$guard >>>' marker in $file — wrap the guard first.");
+    stderr.writeln(
+        "no '// GUARD:$guard >>>' marker in $file — wrap the guard first.");
     exit(3);
   }
   var inb = false;
@@ -32,7 +34,8 @@ Future<void> main(List<String> args) async {
     return inb ? '// [mutation] $l' : l;
   }).join('\n');
   f.writeAsStringSync(muted);
-  stdout.writeln("→ guard '$guard' reverted; running test (expecting FAILURE)…");
+  stdout
+      .writeln("→ guard '$guard' reverted; running test (expecting FAILURE)…");
   try {
     final r = await Process.run('bash', ['-c', test]);
     if (r.exitCode == 0) {

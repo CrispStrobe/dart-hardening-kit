@@ -1,8 +1,7 @@
 name: covfuzz
 description: >-
-  Coverage-guided corpus-evolution fuzzer for Dart parsers. Reads the target's
-  coverage from the VM service after each input and evolves a corpus toward new
-  code, with crash minimization.
+  Reader-robustness fuzzing for Dart parsers: blind and coverage-guided,
+  with crash minimization and CLI tools.
 version: 0.1.0
 repository: https://github.com/CrispStrobe/dart-hardening-kit
 topics:
@@ -20,3 +19,6 @@ environment:
   sdk: ^3.0.0
 dependencies:
   vm_service: ">=14.0.0 <16.0.0"
+
+dev_dependencies:
+  lints: ^4.0.0

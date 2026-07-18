@@ -193,6 +193,13 @@ Future<CovFuzzReport> covFuzz<T>({
   });
 
   await s.dispose();
-  return CovFuzzReport(execs, corpus.length, bestCov, corpus.length - baseCorpus,
-      sw.elapsedMilliseconds, escapes, minimalRepro, minimalSize);
+  return CovFuzzReport(
+      execs,
+      corpus.length,
+      bestCov,
+      corpus.length - baseCorpus,
+      sw.elapsedMilliseconds,
+      escapes,
+      minimalRepro,
+      minimalSize);
 }

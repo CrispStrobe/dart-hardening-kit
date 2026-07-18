@@ -6,14 +6,16 @@ import 'dart:io';
 void main(List<String> args) {
   final pos = args.where((a) => !a.startsWith('--')).toList();
   if (pos.length < 3) {
-    stderr.writeln('usage: covfuzz_scaffold <package-name> <import-path> <name> [--bytes]');
+    stderr.writeln(
+        'usage: covfuzz_scaffold <package-name> <import-path> <name> [--bytes]');
     exit(2);
   }
   final pkg = pos[0], path = pos[1], name = pos[2];
   final bytes = args.contains('--bytes');
   final t = bytes ? 'Uint8List' : 'String';
   final mut = bytes ? 'mutateBytes' : 'mutateString';
-  final imp = path.endsWith('.dart') ? path.substring(0, path.length - 5) : path;
+  final imp =
+      path.endsWith('.dart') ? path.substring(0, path.length - 5) : path;
   Directory('tool').createSync(recursive: true);
   final out = File('tool/fuzz_$name.dart');
   if (out.existsSync()) {

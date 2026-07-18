@@ -4,7 +4,8 @@ import 'dart:io';
 
 Future<void> main(List<String> args) async {
   if (args.length < 3) {
-    stderr.writeln('usage: covfuzz_probe <repo-dir> <package-name> <import-path>');
+    stderr.writeln(
+        'usage: covfuzz_probe <repo-dir> <package-name> <import-path>');
     exit(2);
   }
   final repo = args[0], pkg = args[1], path = args[2];
@@ -15,7 +16,8 @@ Future<void> main(List<String> args) async {
   Directory('$repo/tool').createSync(recursive: true);
   final rel = 'tool/.probe_$pid.dart';
   final probe = File('$repo/$rel');
-  final imp = path.endsWith('.dart') ? path.substring(0, path.length - 5) : path;
+  final imp =
+      path.endsWith('.dart') ? path.substring(0, path.length - 5) : path;
   probe.writeAsStringSync(
       "import 'package:$pkg/$imp.dart';\nvoid main() { print('FUZZABLE_OK_MARKER'); }\n");
   await Process.run('dart', ['pub', 'get'], workingDirectory: repo);
