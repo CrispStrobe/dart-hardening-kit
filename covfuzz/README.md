@@ -18,6 +18,74 @@ dev_dependencies:
   covfuzz: ^0.1.0
 ```
 
+## How-to: harden a parser (the optimal loop)
+
+The order matters — each step feeds the next, and doing them out of order wastes
+time (e.g. coverage-guided fuzzing a target that hard-hangs will just freeze).
+
+**1. Find the target.** List a tree's parse entry points:
+
+```bash
+dart pub global activate covfuzz
+covfuzz_discover ~/projects
+```
+
+**2. Check it fuzzes standalone.**
+
+```bash
+covfuzz_probe ~/projects/my_pkg my_pkg src/foo_parser.dart
+```
+
+`FUZZABLE` → continue. `FFI-BLOCKED` → the import chain reaches a
+`NativeCallable`; copy the pure parse functions into a standalone file (stub
+their return types) and fuzz that.
+
+**3. Blind first — it's ~1000× faster and catches most bugs.**
+
+```bash
+covfuzz_scaffold my_pkg src/foo_parser.dart foo --bytes   # writes tool/fuzz_foo.dart
+# edit tool/fuzz_foo.dart: real seeds, the entry call, your clean-reject list
+dart run tool/fuzz_foo.dart
+```
+
+Fix everything it reports before going further: escapes (with their minimized
+reproducers) **and** the slow-parse signal (exit 2 = a size-driven allocation
+bomb) **and** any hang (blind fuzzing surfaces these; coverage-guided cannot,
+because a hang freezes it). Seed from *valid* samples so mutations reach deep
+code — random bytes bounce off the magic check.
+
+**4. Coverage-guided — for the paths behind a magic check or precondition.**
+Only once blind is clean of hangs. Write a `covFuzz` harness and run it in its
+own process with the VM service on:
+
+```bash
+dart run --enable-vm-service=0 --no-pause-isolates-on-exit tool/covfuzz_foo.dart
+```
+
+It evolves a corpus toward new coverage and finds what blind can't reach (in
+practice: a real `RangeError` behind a valid-protobuf/valid-header prefix that
+blind never produces). Persist the corpus with `corpusDir` so the next run
+continues from the coverage already reached.
+
+**5. Fix, wrap the guard, prove it.** Wrap each fix in markers:
+
+```dart
+// GUARD:foolen >>>
+if (n > _max) throw const FormatException('...');
+// GUARD:foolen <<<
+```
+
+Add the minimized reproducer as a regression test, then prove the test actually
+exercises the guard:
+
+```bash
+covfuzz_mutverify --file lib/src/foo_parser.dart --guard foolen \
+  --test 'dart test test/foo_parser_test.dart'
+```
+
+It reverts the guard, asserts the test now fails, and restores the file. A guard
+the test can't detect has no regression protection.
+
 ## Library
 
 ### Blind fuzzing — `fuzz`
