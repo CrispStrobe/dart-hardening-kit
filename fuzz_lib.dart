@@ -67,6 +67,66 @@ Uint8List mutateBytes(Uint8List seed, Random rng, {int maxOps = 8}) {
 }
 
 // ---------------------------------------------------------------------------
+// Crash minimization (delta-debugging / shrinking)
+// ---------------------------------------------------------------------------
+
+/// Smaller candidates of a String: remove runs of decreasing size (ddmin-style).
+Iterable<String> _shrinkString(String s) sync* {
+  for (var chunk = s.length ~/ 2; chunk >= 1; chunk ~/= 2) {
+    for (var i = 0; i + chunk <= s.length; i += chunk) {
+      yield s.substring(0, i) + s.substring(i + chunk);
+    }
+  }
+}
+
+/// Smaller candidates of a byte list: remove runs of decreasing size.
+Iterable<Uint8List> _shrinkBytes(Uint8List b) sync* {
+  for (var chunk = b.length ~/ 2; chunk >= 1; chunk ~/= 2) {
+    for (var i = 0; i + chunk <= b.length; i += chunk) {
+      final out = Uint8List(b.length - chunk);
+      out.setRange(0, i, b);
+      out.setRange(i, out.length, b, i + chunk);
+      yield out;
+    }
+  }
+}
+
+/// Reduce [input] to a minimal reproducer that still throws the same escape
+/// type. Auto-shrinks String and Uint8List; other types are returned as-is.
+T _minimize<T>(T input, String escapeType, void Function(T) entry,
+    bool Function(Object) clean) {
+  bool stillFails(T c) {
+    try {
+      entry(c);
+      return false;
+    } catch (e) {
+      return !clean(e) && e.runtimeType.toString() == escapeType;
+    }
+  }
+
+  Iterable<T> candidates(T x) {
+    if (x is String) return _shrinkString(x).cast<T>();
+    if (x is Uint8List) return _shrinkBytes(x).cast<T>();
+    return const Iterable.empty();
+  }
+
+  var current = input;
+  var improved = true;
+  var guard = 0;
+  while (improved && guard++ < 100000) {
+    improved = false;
+    for (final c in candidates(current)) {
+      if (stillFails(c)) {
+        current = c;
+        improved = true;
+        break;
+      }
+    }
+  }
+  return current;
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -75,15 +135,18 @@ class FuzzReport {
   final int elapsedMs;
   final int maxSingleMs;
   final Map<String, int> escapes;
-  final Map<String, String> examples;
-  FuzzReport(
-      this.runs, this.elapsedMs, this.maxSingleMs, this.escapes, this.examples);
+
+  /// Per escape type, a minimized reproducer (`toString`) and its size.
+  final Map<String, String> minimalRepro;
+  final Map<String, int> minimalSize;
+
+  FuzzReport(this.runs, this.elapsedMs, this.maxSingleMs, this.escapes,
+      this.minimalRepro, this.minimalSize);
 
   bool get clean => escapes.isEmpty;
 
   /// The slow-parse tell: a size-driven bomb makes the fuzzer crawl.
-  bool get slow =>
-      (runs > 0 && elapsedMs / runs > 5) || maxSingleMs > 200;
+  bool get slow => (runs > 0 && elapsedMs / runs > 5) || maxSingleMs > 200;
 
   /// Prints the report and returns a process exit code (0 = clean & fast).
   int report() {
@@ -101,8 +164,10 @@ class FuzzReport {
       return slow ? 2 : 0;
     }
     stdout.writeln('ESCAPES (contract violations): $escapes');
-    examples.forEach((k, v) =>
-        stdout.writeln('  $k <= ${v.replaceAll('\n', '\\n')}'));
+    for (final k in minimalRepro.keys) {
+      final repro = minimalRepro[k]!.replaceAll('\n', '\\n');
+      stdout.writeln('  $k — minimal repro (len=${minimalSize[k]}): $repro');
+    }
     return 1;
   }
 }
@@ -129,7 +194,7 @@ FuzzReport fuzz<T>({
   final clean = isClean ?? (e) => e is FormatException;
   final rng = Random(seed);
   final escapes = <String, int>{};
-  final examples = <String, String>{};
+  final firstFail = <String, T>{}; // one captured input per escape type
   var runs = 0, maxMs = 0;
   final sw = Stopwatch()..start();
 
@@ -142,10 +207,7 @@ FuzzReport fuzz<T>({
       if (!clean(e)) {
         final k = e.runtimeType.toString();
         escapes[k] = (escapes[k] ?? 0) + 1;
-        examples.putIfAbsent(k, () {
-          final s = input.toString();
-          return s.length > 80 ? '${s.substring(0, 80)}…' : s;
-        });
+        firstFail.putIfAbsent(k, () => input);
       }
     }
     final ms = t.elapsedMilliseconds;
@@ -162,5 +224,19 @@ FuzzReport fuzz<T>({
   for (final s in stressors) {
     run(s);
   }
-  return FuzzReport(runs, sw.elapsedMilliseconds, maxMs, escapes, examples);
+
+  // Minimize one captured input per escape type into a small reproducer.
+  final minimalRepro = <String, String>{};
+  final minimalSize = <String, int>{};
+  firstFail.forEach((type, input) {
+    final min = _minimize(input, type, entry, clean);
+    final s = min.toString();
+    minimalRepro[type] = s.length > 200 ? '${s.substring(0, 200)}…' : s;
+    minimalSize[type] = min is String
+        ? min.length
+        : (min is Uint8List ? min.length : -1);
+  });
+
+  return FuzzReport(runs, sw.elapsedMilliseconds, maxMs, escapes, minimalRepro,
+      minimalSize);
 }

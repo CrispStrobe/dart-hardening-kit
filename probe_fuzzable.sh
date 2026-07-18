@@ -13,13 +13,15 @@ repo="${1:?repo-dir}"; pkg="${2:?package-name}"; path="${3:?import-path}"
 # The probe must live INSIDE the package so `dart run` resolves package: imports.
 mkdir -p "$repo/tool"
 probe="$repo/tool/.probe_fuzzable_$$.dart"
-printf "import 'package:%s/%s.dart';\nvoid main() { print('ok'); }\n" \
+printf "import 'package:%s/%s.dart';\nvoid main() { print('FUZZABLE_OK_MARKER'); }\n" \
   "$pkg" "${path%.dart}" > "$probe"
 # resolve deps quietly (best-effort; ignore failures — the run below is the test)
 ( cd "$repo" && dart pub get >/dev/null 2>&1 || true )
 out="$(cd "$repo" && dart run "tool/$(basename "$probe")" 2>&1 || true)"
 rm -f "$probe"
-if grep -q "^ok$" <<<"$out"; then
+# Match loosely: Flutter's "Running build hooks..." prints without a newline, so
+# the marker can be appended to another line rather than sitting on its own.
+if grep -q "FUZZABLE_OK_MARKER" <<<"$out"; then
   echo "FUZZABLE   $path"
 elif grep -qE "is not a subtype of type 'FunctionType'|_FfiUseSiteTransformer|dart:ffi" <<<"$out"; then
   echo "FFI-BLOCKED $path — extract the pure logic into a standalone copy first"

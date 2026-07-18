@@ -1,57 +1,58 @@
 # dart-hardening-kit
 
-Lightweight scaffolding for **reader-robustness fuzzing** of Dart parsers — the
-loop that finds crashes, hangs, and decode-bombs in code that reads untrusted
-input (binary formats, text protocols, JSON from the network).
+Scaffolding for **reader-robustness fuzzing** of Dart parsers — code that reads
+untrusted input (binary formats, text protocols, JSON from the network). It
+automates the mechanical parts of the loop (discovery, harness plumbing,
+fuzzability probing, crash minimization, mutation-verification) so the work
+that remains is triage and the fix.
 
-It mechanizes the boilerplate — discovery, fuzzer plumbing, fuzzability probing,
-mutation-verification — and leaves you the judgment: *is this escape a real bug,
-what's the root cause, and what's the right fix.*
+The runner surfaces two failure classes:
 
-> A **fuzzing farm + triage harness**, not an auto-fixer. It surfaces contract
-> violations (a `RangeError`/`TypeError`/`StateError` leaking where a clean
-> rejection was expected) and slow parses (size-driven allocation bombs). It does
-> not decide whether a finding is a real bug or write the fix — that's the
-> reasoning step it exists to feed.
+- **Escapes** — a `RangeError` / `StateError` / `TypeError` leaking where a
+  clean rejection was expected, and reduces each to a **minimal reproducer**.
+- **Slow parses** — tens of milliseconds per iteration on small inputs, the
+  signature of a size-driven allocation or loop bomb (a denial-of-service).
 
 ## The contract it checks
 
-A parser reading untrusted input must **never crash or hang** on malformed data —
-it either parses leniently or rejects with a *clean, documented* exception
-(`FormatException`, or the parser's own reject type). A leaked `RangeError` /
-`StateError` / `TypeError`, an out-of-memory, an infinite loop, or a
-multi-second "parse" is a bug.
+A parser reading untrusted input must never crash or hang on malformed data. It
+either parses leniently or rejects with a documented exception (`FormatException`,
+or the parser's own reject type). A leaked `RangeError` / `StateError` /
+`TypeError`, an out-of-memory, an infinite loop, or a multi-second parse is a
+defect.
 
-## The loop, and which tool covers each step
+## Workflow
 
-| Step | Tool | Judgment left to you |
-|---|---|---|
-| Find packages + parse entry points | `discover.sh` | which are worth fuzzing |
-| Can it fuzz standalone? | `probe_fuzzable.sh` | if FFI-blocked, extract the pure logic first |
-| Write the fuzzer | `scaffold_fuzz.sh` + `fuzz_lib.dart` | seeds + the clean-reject allow-list |
-| Run + collect escapes / slow-parse | `fuzz_lib.dart` (exit code) | *is an escape a real bug?* |
-| Root-cause + fix | — | the actual engineering |
-| Prove the guard is load-bearing | `mutation_verify.sh` | wrap the guard in markers |
+| Step | Tool |
+|---|---|
+| Enumerate a tree's parse entry points | `discover.sh` |
+| Check whether a file fuzzes standalone (or is FFI-blocked) | `probe_fuzzable.sh` |
+| Generate a harness | `scaffold_fuzz.sh` + `fuzz_lib.dart` |
+| Run, collect escapes (minimized) + slow-parse signal | `fuzz_lib.dart` (exit code) |
+| Prove a hardening guard is load-bearing | `mutation_verify.sh` |
+
+Root-causing the escape and writing the fix are manual — the kit exists to make
+those the only manual steps.
 
 ## Quick start
 
 ```bash
 kit=/path/to/dart-hardening-kit
 
-# 1. What's out there?
+# Enumerate parse entry points under a tree.
 "$kit/discover.sh" ~/projects | less
 
-# 2. Pick a candidate; can it fuzz under bare `dart run`?
+# Check whether a candidate compiles under bare `dart run`.
 "$kit/probe_fuzzable.sh" ~/projects/my_package my_package src/foo_parser.dart
 #   FUZZABLE    -> scaffold a harness
 #   FFI-BLOCKED -> extract the pure functions into a standalone copy first
 
-# 3. Scaffold + wire the harness (edit the TODOs: seeds + entry + allow-list).
+# Scaffold and wire the harness (fill in: seeds, entry call, clean-reject list).
 "$kit/scaffold_fuzz.sh" ~/projects/my_package my_package src/foo_parser.dart foo
 cd ~/projects/my_package && dart run tool/fuzz_foo.dart
 #   CLEAN (exit 0) | ESCAPES (exit 1) | SLOW/bomb (exit 2)
 
-# 4. Fix the bug, wrap the guard in markers, add a regression test, then:
+# After fixing, wrap the guard in markers and verify the test catches it:
 "$kit/mutation_verify.sh" \
   --file lib/src/foo_parser.dart --guard depth \
   --test 'dart test test/foo_parser_test.dart'
@@ -59,34 +60,32 @@ cd ~/projects/my_package && dart run tool/fuzz_foo.dart
 
 ## Files
 
-- **`fuzz_lib.dart`** — the reusable harness. `mutateString` / `mutateBytes`
-  operators + a `fuzz(...)` runner that records escapes, tracks the slowest
-  single parse, and flags the **slow-parse tell** (tens of ms per iteration on
-  small inputs = a size-driven allocation/loop bomb, not thorough coverage).
-  Exit code: `0` clean & fast, `1` escapes, `2` clean but slow (a likely bomb).
+- **`fuzz_lib.dart`** — the harness. `mutateString` / `mutateBytes` mutation
+  operators and a `fuzz(...)` runner that records escapes, **minimizes each to a
+  small reproducer** via delta-debugging, and flags the slow-parse signal. Exit
+  code: `0` clean and fast, `1` escapes, `2` clean but slow.
 - **`scaffold_fuzz.sh`** — copies `fuzz_lib.dart` into `<repo>/tool/` and writes
-  a `fuzz_<name>.dart` stub with the three things you fill in: seeds, the entry
+  a `fuzz_<name>.dart` stub with three fields to complete: seeds, the entry
   call, and the clean-reject allow-list.
-- **`probe_fuzzable.sh`** — compiles a one-line probe *inside* the package to
-  detect the FFI-transformer crash that blocks bare `dart run` (a pure-Dart
-  parser in a Flutter app whose import chain pulls a `NativeCallable`).
+- **`probe_fuzzable.sh`** — compiles a one-line probe inside the package to
+  detect the FFI-transformer failure that blocks bare `dart run` (a pure-Dart
+  parser whose import chain reaches a `NativeCallable`).
 - **`mutation_verify.sh`** — reverts a marker-wrapped guard, asserts the paired
   test now fails, and restores the file byte-identically.
-- **`discover.sh`** — greps every package under a root for parse entry points
-  (byte readers, `parseXxx(String)`, `fromJson`) and flags `dart:ffi` users.
+- **`discover.sh`** — greps a tree for parse entry points (byte readers,
+  `parseXxx(String)`, `fromJson`) and flags packages using `dart:ffi`.
 
-## Seeds matter
+## Seeds
 
-Mutation-based blackbox fuzzing needs **good seeds**: start from *valid*
-encodings so mutations keep enough structure (magic bytes, signatures, a valid
-JSON envelope) to reach the deep parse paths where the bugs live. Feeding pure
-random bytes mostly bounces off the format's magic check and never exercises the
-vulnerable code. For binary formats, seed from real sample files (a golden
-fixture); for JSON, from a valid document.
+Mutation-based fuzzing depends on good seeds. Start from valid encodings so
+mutations retain enough structure (magic bytes, signatures, a valid JSON
+envelope) to reach the deep parse paths where defects occur. Random bytes
+mostly bounce off the format's magic check. For binary formats, seed from real
+sample files; for JSON, from a valid document.
 
-## The guard-marker convention (for `mutation_verify.sh`)
+## Guard-marker convention
 
-Wrap each hardening guard so it can be mechanically reverted:
+Wrap each hardening guard so `mutation_verify.sh` can revert it mechanically:
 
 ```dart
 // GUARD:maxdepth >>>
@@ -94,24 +93,53 @@ if (depth > _maxDepth) throw const FormatException('nesting too deep');
 // GUARD:maxdepth <<<
 ```
 
-`mutation_verify.sh --file … --guard maxdepth --test '…'` comments out the block,
-runs the test expecting it to fail (proving the test exercises the guard), then
-restores the file byte-identically.
+`mutation_verify.sh --guard maxdepth` comments out the block, runs the test
+expecting failure (confirming the test exercises the guard), and restores the
+file. A guard the test cannot detect has no regression protection.
 
-## What it can't do (be honest)
+## Prior art and design choices
 
-- **No coverage-guided fuzzing.** Dart has no libFuzzer/AFL equivalent, so this
-  is mutation-based blackbox from good seeds.
-- **It won't triage for you.** It can't tell a *deliberate* reject type (your own
-  `FooException`) from a real leak — you declare that in the allow-list. And it
-  won't decide whether a finding clears your threat-model bar.
-- **It won't root-cause or write the fix.** That's the reasoning step; the kit
-  exists to put every escape in front of a reasoner fast.
+Coverage-guided fuzzers — **libFuzzer**, **AFL++**, **Honggfuzz**, and the
+**OSS-Fuzz** infrastructure built on them — are the state of the art for
+C/C++/Rust. They instrument the target, evolve a corpus toward new coverage,
+carry input dictionaries, and minimize crashes. Dart has no comparable
+in-process coverage feedback at fuzzing speed, so this kit uses **blind
+mutation from seeds**: weaker at reaching deep code, but zero-setup and fast to
+apply across many packages.
+
+Two ideas are borrowed directly:
+
+- **Crash minimization** (libFuzzer `-minimize_crash`, AFL `tmin`): each escape
+  is reduced by delta-debugging to a minimal input that still reproduces the
+  same exception type — the single most time-consuming step to do by hand.
+- **Guard-targeted mutation testing**: `mutation_verify.sh` is a narrow form of
+  what **`package:mutation_test`** does across a whole file — it mutates exactly
+  one hardening guard and checks the test catches it.
+
+For property-based testing with generators and shrinking, **`package:glados`**
+is the established Dart tool; it targets invariants over generated values,
+whereas this kit targets the "never crash on malformed input" contract over
+real-world seeds.
+
+## Limitations and roadmap
+
+- **No coverage feedback.** Mutation is blind; it will not synthesize an input
+  that satisfies a checksum or a multi-field precondition the way a
+  coverage-guided fuzzer can. A VM-coverage-driven corpus is the largest
+  possible improvement.
+- **No structure-aware mutation.** Dumb byte-flipping bounces off magic numbers
+  and checksums. An input dictionary (libFuzzer `-dict` style) of format tokens
+  would reach deeper; it is a natural extension of `mutateBytes`.
+- **Triage is manual.** The allow-list distinguishes a deliberate reject type
+  from a real leak; the kit does not decide whether a finding clears a given
+  threat model, nor does it write the fix.
+- **`probe_fuzzable.sh` is slow on large Flutter apps** because it runs a real
+  `dart pub get` and compile per file. Batch runs should parallelize or cache.
 
 ## Requirements
 
-- Dart SDK 3.x (`dart run`, `dart test`, `dart analyze`).
-- `bash` for the shell scripts.
+- Dart SDK 3.x
+- `bash` for the shell scripts
 
 ## License
 
