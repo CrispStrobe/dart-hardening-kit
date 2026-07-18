@@ -1,8 +1,7 @@
 .dart_tool/
 .DS_Store
 *.log
-tool/.probe_fuzzable_*.dart
-covfuzz/pubspec.lock
-covfuzz/.dart_tool/
+pubspec.lock
 .corpus/
 .crashes/
+tool/.probe_fuzzable_*.dart

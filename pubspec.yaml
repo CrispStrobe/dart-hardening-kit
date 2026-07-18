@@ -3,7 +3,7 @@ description: >-
   Reader-robustness fuzzing for Dart parsers: blind and coverage-guided,
   with crash minimization and CLI tools.
 version: 0.1.0
-repository: https://github.com/CrispStrobe/dart-hardening-kit
+repository: https://github.com/CrispStrobe/covfuzz
 topics:
   - fuzzing
   - testing
