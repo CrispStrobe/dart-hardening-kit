@@ -10,6 +10,12 @@ topics:
   - testing
   - security
   - parser
+executables:
+  covfuzz_discover: discover
+  covfuzz_probe: probe
+  covfuzz_mutverify: mutverify
+  covfuzz_scaffold: scaffold
+
 environment:
   sdk: ^3.0.0
 dependencies:

@@ -1,86 +1,126 @@
 # covfuzz
 
-Coverage-guided corpus-evolution fuzzer for Dart parsers. Where the top-level
-kit's `fuzz_lib.dart` mutates blindly, covfuzz reads its own coverage from the
-VM service after each input and keeps any input that reaches new code as a
-corpus seed — the libFuzzer/AFL corpus-evolution loop, using the only coverage
-signal Dart exposes.
+Reader-robustness fuzzing for Dart parsers — code that reads untrusted input
+(binary formats, text protocols, JSON from the network). One library, two tiers,
+plus command-line tools for the surrounding workflow.
 
-## Why
+The contract it checks: a parser must never crash or hang on malformed input. It
+either parses leniently or rejects with a documented exception
+(`FormatException`, or its own reject type). A leaked `RangeError` /
+`StateError` / `TypeError`, an out-of-memory, an infinite loop, or a
+multi-second parse is a defect. Any thrown exception outside your allow-list is
+recorded and reduced to a minimal reproducer.
 
-Blind mutation cannot get past a magic check or a multi-field precondition: it
-would have to satisfy every byte at once. Coverage guidance earns each matched
-condition as new coverage and builds on it.
+## Install
 
-Demo (`example/`, a parser with a bug behind a 4-byte `FUZZ` magic):
-
-```
-BLIND: 500k mutations, RangeErrors found = 0
-COVERAGE-GUIDED:
-  exec=946    coverage=8   corpus=2          (matched 'F')
-  exec=1252   coverage=12  corpus=3          (matched 'FU')
-  exec=6770   coverage=16  corpus=4          (matched 'FUZ')
-  exec=13483  coverage=20  corpus=5  [ESCAPE RangeError]   (matched 'FUZZ' → bug)
-  RangeError — minimal repro (len=5): [70, 85, 90, 90, 8]   ("FUZZ" + length 8)
+```yaml
+dev_dependencies:
+  covfuzz: ^0.1.0
 ```
 
-Blind never produces the four magic bytes plus a bad length in one mutation
-(~2⁻³²); covfuzz climbs the four conditions in ~13k executions and minimizes the
-crash to its exact 5-byte trigger.
+## Library
 
-## Usage
+### Blind fuzzing — `fuzz`
 
-covfuzz reads coverage from the VM service, so the harness **must** run with it
-enabled:
-
-```bash
-dart run --enable-vm-service=0 --no-pause-isolates-on-exit tool/covfuzz_foo.dart
-```
-
-A harness:
+Zero setup, ~1M execs/sec. The fast first pass: it shakes out crashes and the
+slow-parse (bomb) signal, and minimizes each escape.
 
 ```dart
 import 'dart:typed_data';
 import 'package:covfuzz/covfuzz.dart';
 import 'package:my_pkg/src/foo_parser.dart';
 
-Future<void> main() async {
-  final r = await covFuzz<Uint8List>(
-    seeds: [/* valid sample(s) */],
+void main() {
+  final report = fuzz<Uint8List>(
+    seeds: [validSample],               // valid input(s) — mutations start here
     entry: (b) => parseFoo(b),
-    mutate: mutateBytes,             // or mutateString
-    targetLib: 'package:my_pkg/src/foo_parser.dart', // library to score coverage on
-    isClean: (e) => e is FormatException,            // your clean-reject types
-    iterations: 40000,
-    budgetMs: 120000,
-    corpusDir: '.corpus/foo',        // optional: persist the evolved corpus
-    crashDir: '.crashes/foo',        // optional: save minimized crashes
-    log: true,                       // print the coverage climb
+    mutate: mutateBytes,                // or mutateString
+    isClean: (e) => e is FormatException, // your clean-reject types
+    stressors: [Uint8List(0), hugeInput], // structural cases mutation misses
   );
-  r.report();                        // prints; returns 0 clean, 1 escapes
+  report.report(); // prints; returns 0 clean & fast, 1 escapes, 2 clean-but-slow
 }
 ```
 
-`corpusDir` persists new-coverage inputs across runs (OSS-Fuzz style): a later
-run reloads them as seeds and continues from the coverage already reached.
+### Coverage-guided fuzzing — `covFuzz`
 
-## Throughput and limits
+For paths behind a magic check or a multi-field precondition that blind mutation
+can't reach. It reads the target library's coverage from the VM service after
+each input and keeps any input that reaches new code as a corpus seed, so the
+corpus evolves toward deep code.
 
-- The VM-service coverage query runs after **every** input (correct per-input
-  attribution) and costs a few milliseconds, so throughput is ~100–1000
-  execs/sec depending on target size — orders of magnitude below a
-  natively-instrumented fuzzer, but it evolves a corpus blind mutation cannot.
-  Run it for minutes-to-hours; persist the corpus.
-- The target runs **in-process**, so a hard hang (a synchronous infinite loop)
-  freezes the fuzzer — Dart cannot interrupt it. Shake hangs out first with the
-  blind `fuzz_lib.dart` (it reports the slow-parse signal), then run covfuzz to
-  reach depth.
-- Coverage is process-global and cumulative: run each covfuzz session in its own
-  process so a prior run doesn't pollute the baseline.
-- `mutateBytes` is biased toward in-place edits (replace / bit-flip) so byte
-  positions stay stable enough for coverage to match positional magic bytes.
+**Must** run with the VM service enabled:
+
+```bash
+dart run --enable-vm-service=0 --no-pause-isolates-on-exit tool/covfuzz_foo.dart
+```
+
+```dart
+final r = await covFuzz<Uint8List>(
+  seeds: [validSample],
+  entry: (b) => parseFoo(b),
+  mutate: mutateBytes,
+  targetLib: 'package:my_pkg/src/foo_parser.dart', // library to score coverage on
+  isClean: (e) => e is FormatException,
+  corpusDir: '.corpus/foo',  // optional: persist the evolved corpus across runs
+  crashDir: '.crashes/foo',  // optional: save minimized crashes
+  log: true,                 // print the coverage climb
+);
+r.report();
+```
+
+On the bundled demo (`example/`, a bug behind a 4-byte `FUZZ` magic), blind
+mutation finds nothing in 500k tries while covFuzz climbs the four conditions
+(coverage 8→12→16→20) and reports the minimized 5-byte trigger `[70,85,90,90,8]`.
+
+## Command-line tools
+
+`dart pub global activate covfuzz` (or `dart run covfuzz:<tool>`):
+
+- **`covfuzz_discover [root]`** — list a tree's packages and their parse entry
+  points (byte readers, `parseXxx(String)`, `fromJson`); flags `dart:ffi` users.
+- **`covfuzz_probe <repo> <pkg> <import-path>`** — does the file fuzz under bare
+  `dart run`, or is it FFI-blocked (extract the pure logic first)?
+- **`covfuzz_scaffold <pkg> <import-path> <name> [--bytes]`** — write a harness
+  stub in `tool/`.
+- **`covfuzz_mutverify --file F --guard NAME --test 'CMD'`** — prove a hardening
+  guard is load-bearing: revert a marker-wrapped guard, run the test expecting
+  failure, restore the file byte-identically. Wrap guards as:
+  ```dart
+  // GUARD:maxdepth >>>
+  if (depth > _maxDepth) throw const FormatException('nesting too deep');
+  // GUARD:maxdepth <<<
+  ```
+
+## Seeds
+
+Start from valid encodings so mutations keep enough structure (magic bytes,
+signatures, a valid JSON envelope) to reach deep parse paths. Random bytes
+mostly bounce off the format's magic check. Seed binary formats from real sample
+files; JSON from a valid document.
+
+## Prior art and limits
+
+Coverage-guided fuzzers — libFuzzer, AFL++, OSS-Fuzz — are the state of the art
+for C/C++/Rust, with native per-execution coverage hitmaps. Dart has no such
+in-process signal, so covFuzz reads coverage from the VM service (one query per
+input, ~100–1000 execs/sec — orders below a native fuzzer, but it evolves a
+corpus blind mutation cannot). Crash minimization borrows libFuzzer's
+`-minimize_crash`; `covfuzz_mutverify` is a guard-targeted form of what
+`package:mutation_test` does across a file; for property testing with shrinking,
+`package:glados` is the established Dart tool.
+
+- The target runs in-process, so a hard hang freezes covFuzz — shake hangs out
+  with blind `fuzz` first.
+- Coverage is process-global and cumulative — run each covFuzz session in its
+  own process.
+- No structure-aware / dictionary mutation yet; `mutateBytes` is biased toward
+  in-place edits so positions stay stable enough to match magic bytes.
 
 ## Requirements
 
-- Dart SDK 3.x
-- `package:vm_service` (declared in `pubspec.yaml`)
+Dart SDK 3.x. Native platforms only (`dart:io` + VM service).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
